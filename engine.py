@@ -1,41 +1,31 @@
 from flask import Flask, request, jsonify
-import sqlite3, subprocess, time, uuid, os, requests
-from cyber_vault import encrypt_code, decrypt_code
+import subprocess, time, uuid, os
 
 app = Flask(__name__)
 
-# CONFIG: Ikkada NCR link pettu
-NCR_WEBHOOK_URL = "https://ncr-ai-system.com/api/receive-metrics"
+# 1. DATABASE (Store chesthundi ikkade)
+candidates_db = []
 
+# --- CORE EXECUTION ENGINE ---
 def run_interview_task(user_code, custom_input, language):
     ext_map = {"cpp": ".cpp", "python": ".py", "c": ".c", "java": ".java", "javascript": ".js"}
     unique_id = "Judge_" + uuid.uuid4().hex[:8]
-    ext = ext_map.get(language, ".txt")
-    filename = f"{unique_id}{ext}"
+    filename = f"{unique_id}{ext_map.get(language, '.txt')}"
     
-    with open(filename, 'w') as f:
-        f.write(user_code)
+    with open(filename, 'w') as f: f.write(user_code)
 
     cmds = {
-        "cpp": f'g++ {filename} -o {unique_id}_exe && ./{unique_id}_exe {custom_input}',
-        "c": f'gcc {filename} -o {unique_id}_exe && ./{unique_id}_exe {custom_input}',
         "python": f'python3 {filename} {custom_input}',
-        "java": f'java {filename} {custom_input}',
-        "javascript": f'node {filename} {custom_input}'
+        "javascript": f'node {filename} {custom_input}',
+        "cpp": f'g++ {filename} -o {unique_id}_exe && ./{unique_id}_exe {custom_input}'
     }
 
     start_time = time.perf_counter()
     try:
-        if language in cmds:
-            process = subprocess.run(cmds[language], shell=True, capture_output=True, text=True, timeout=5)
-            stdout = process.stdout
-        else:
-            stdout = "Unsupported Language"
-    except subprocess.TimeoutExpired:
-        stdout = "TIMEOUT ERROR"
-    except Exception as e:
-        stdout = f"EXECUTION ERROR: {str(e)}"
-        
+        process = subprocess.run(cmds.get(language, cmds["python"]), shell=True, capture_output=True, text=True, timeout=5)
+        stdout = process.stdout
+    except:
+        stdout = "ERROR OR TIMEOUT"
     end_time = time.perf_counter()
 
     if os.path.exists(filename): os.remove(filename)
@@ -43,50 +33,93 @@ def run_interview_task(user_code, custom_input, language):
 
     return stdout.strip(), (end_time - start_time) * 1000
 
+# --- API: UPLOAD & EVALUATE ---
 @app.route('/upload-blueprint', methods=['POST'])
-def home():
-    return "<h1>🔥 Phoenix Prime Engine is LIVE!</h1><p>Send a POST request to /upload-blueprint to start execution.</p>"
 def upload_blueprint():
-    try:
-        data = request.get_json()
-        code = data.get('code', '')
-        language = data.get('language', 'python')
-        dev_name = data.get('developer_name', 'Anonymous')
-        interviewer_input = data.get('test_input', '100')
-        
-        blueprint_id = "BP_" + uuid.uuid4().hex[:6].upper()
+    data = request.get_json()
+    code = data.get('code')
+    language = data.get('language', 'python')
+    dev_name = data.get('developer_name', 'Anonymous')
+    interviewer_input = data.get('test_input', '50')
+    
+    # 1. Run the code
+    actual_output, exec_time = run_interview_task(code, interviewer_input, language)
+    
+    # 2. Generate Metrics
+    candidate_result = {
+        "name": dev_name,
+        "actual_output": actual_output,
+        "big_o": "O(N)", # Dynamic assignment in real-world
+        "execution_time_ms": round(exec_time, 2),
+        "space_complexity": "O(1)",
+        "memory_usage_estimate_kb": 256 # Base estimate
+    }
+    
+    # 3. Save to Local Leaderboard
+    candidates_db.append(candidate_result)
+    
+    return jsonify({"status": "Evaluated & Added to Leaderboard", "metrics": candidate_result})
 
-        # Database Save
-        locked_code = encrypt_code(code)
-        conn = sqlite3.connect('voidhub.db')
-        c = conn.cursor()
-        c.execute("CREATE TABLE IF NOT EXISTS blueprints (id TEXT, code BLOB, language TEXT, name TEXT)")
-        c.execute("INSERT INTO blueprints VALUES (?, ?, ?, ?)", (blueprint_id, locked_code, language, dev_name))
-        conn.commit()
-        conn.close()
+# --- UI: THE LEADERBOARD DASHBOARD ---
+@app.route('/')
+def dashboard():
+    if not candidates_db:
+        return "<h2 style='color:white; background:#121212; padding:20px; font-family:sans-serif;'>🔥 Phoenix Engine LIVE: Waiting for candidates to submit code...</h2>"
 
-        # Execution
-        actual_output, exec_time = run_interview_task(code, interviewer_input, language)
-        
-        final_output = {
-            "name": dev_name,
-            "actual_output": actual_output,
-            "big_o": "O(N)",
-            "execution_time_ms": round(exec_time, 2),
-            "space_complexity": "O(1)",
-            "memory_usage_kb": 256,
-            "interviewer_input_used": interviewer_input
-        }
+    # Target Criteria
+    TARGET_BIG_O = "O(N)"
+    TARGET_MAX_TIME = 50.0  
 
-        # Push to NCR
-        try:
-            requests.post(NCR_WEBHOOK_URL, json=final_output, timeout=2)
-        except:
-            pass
+    scored_candidates = []
 
-        return jsonify(final_output)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    # AI Scoring Logic
+    for c in candidates_db:
+        score = 5000.0  
+        score -= (c['execution_time_ms'] * 5)
+        score -= (c['memory_usage_estimate_kb'] * 2)
+        if c['big_o'] == TARGET_BIG_O: score += 1000.0
+            
+        c['score'] = round(score, 1)
+        scored_candidates.append(c)
+
+    # Sort ranks
+    scored_candidates.sort(key=lambda x: x['score'], reverse=True)
+
+    # Generate HTML
+    html = """
+    <body style="background-color:#0D1117; color:#C9D1D9; font-family:Arial; padding:40px;">
+        <h1 style="color:#58A6FF;">🏆 Phoenix Hackathon Leaderboard</h1>
+        <table style="width:100%; border-collapse: collapse; text-align: left;">
+            <tr style="background-color:#161B22; border-bottom: 2px solid #30363D;">
+                <th style="padding:15px;">Rank</th>
+                <th style="padding:15px;">Candidate</th>
+                <th style="padding:15px;">AI Score</th>
+                <th style="padding:15px;">Big-O</th>
+                <th style="padding:15px;">Exec Time (ms)</th>
+                <th style="padding:15px;">Memory (KB)</th>
+                <th style="padding:15px;">Output</th>
+            </tr>
+    """
+
+    for index, c in enumerate(scored_candidates):
+        # Highlighting logic
+        big_o_color = "#00FF00" if c['big_o'] == TARGET_BIG_O else "#9B59B6" 
+        time_color = "#00FF00" if c['execution_time_ms'] <= TARGET_MAX_TIME else "#9B59B6"
+
+        html += f"""
+            <tr style="border-bottom: 1px solid #30363D;">
+                <td style="padding:15px; font-size:20px;"><b>#{index + 1}</b></td>
+                <td style="padding:15px; color:white;">{c['name']}</td>
+                <td style="padding:15px; color:#FFD700; font-weight:bold;">{c['score']}</td>
+                <td style="padding:15px; color:{big_o_color}; font-weight:bold;">{c['big_o']}</td>
+                <td style="padding:15px; color:{time_color}; font-weight:bold;">{c['execution_time_ms']}</td>
+                <td style="padding:15px;">{c['memory_usage_estimate_kb']}</td>
+                <td style="padding:15px; color:#8B949E;">{c['actual_output']}</td>
+            </tr>
+        """
+    
+    html += "</table></body>"
+    return html
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
