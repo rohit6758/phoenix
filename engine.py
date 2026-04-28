@@ -44,6 +44,8 @@ def run_interview_task(user_code, custom_input, language):
     return stdout.strip(), (end_time - start_time) * 1000
 
 @app.route('/upload-blueprint', methods=['POST'])
+def home():
+    return "<h1>🔥 Phoenix Prime Engine is LIVE!</h1><p>Send a POST request to /upload-blueprint to start execution.</p>"
 def upload_blueprint():
     try:
         data = request.get_json()
