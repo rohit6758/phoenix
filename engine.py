@@ -57,8 +57,6 @@ def upload_blueprint():
     
     # THE FLAT JSON OUTPUT (Just like you asked)
     final_response = {
-        "status": "Success",
-        "blueprint_id": blueprint_id,
         "name": dev_name,
         "actual_output": actual_output,
         "big_o": "O(N)", # Dynamic profiling result
