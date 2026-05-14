@@ -195,8 +195,10 @@ def analyze_asset():
     report = analyze_blueprint(data)
     
     entry = {
+        "id": len(analysis_history),
         "asset": report['asset_name'],
         "report": report,
+        "raw_data": data,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
     analysis_history.append(entry)
@@ -209,6 +211,27 @@ def analyze_asset():
         "status": "Phoenix Analysis Complete",
         "void_hub_report": report
     })
+
+@app.route('/api/simulate', methods=['POST'])
+def api_simulate():
+    """Real-time simulation endpoint that recalculates stats based on user overrides."""
+    req = request.get_json()
+    asset_id = req.get('id')
+    overrides = req.get('overrides', {})
+    
+    if asset_id is None or asset_id >= len(analysis_history):
+        return jsonify({"error": "Asset not found"}), 404
+        
+    # Start with the original blueprint data
+    simulated_data = analysis_history[asset_id]['raw_data'].copy()
+    
+    # Apply user tweaks dynamically
+    for key, value in overrides.items():
+        if key in simulated_data:
+            simulated_data[key] = type(simulated_data[key])(value) if value != "" else 0
+            
+    new_report = analyze_blueprint(simulated_data)
+    return jsonify(new_report)
 
 # --- DASHBOARD UI TEMPLATE ---
 DASHBOARD_HTML = """
@@ -265,6 +288,7 @@ DASHBOARD_HTML = """
                     {% set score = entry.report.optimization_score %}
                     <div class="score {% if score >= 80 %}excellent{% elif score >= 50 %}warning{% else %}danger{% endif %}">
                         {{ score }}%
+                        <a href="/simulate/{{ entry.id }}" class="btn" style="background: #1F6FEB; font-size: 0.6em; margin-left: 15px; text-decoration: none;">Launch Interactive Sim 🚀</a>
                     </div>
                 </div>
                 
@@ -307,10 +331,135 @@ DASHBOARD_HTML = """
 </html>
 """
 
+# --- INTERACTIVE SIMULATOR TEMPLATE ---
+SIMULATOR_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phoenix Live Simulator - {{ entry.asset }}</title>
+    <style>
+        body { background: #0D1117; color: #C9D1D9; font-family: 'Segoe UI', sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        .store-side { flex: 6; padding: 40px; overflow-y: auto; border-right: 1px solid #30363D; display: flex; flex-direction: column; }
+        .phoenix-side { flex: 4; padding: 40px; background: #161B22; overflow-y: auto; display: flex; flex-direction: column; }
+        .video-placeholder { background: #000; height: 400px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #8B949E; border: 1px dashed #30363D; margin-bottom: 20px; font-size: 1.2em; }
+        .buy-box { background: #21262D; padding: 20px; border-radius: 8px; margin-top: 20px; }
+        .btn-buy { background: #238636; color: white; border: none; padding: 15px 30px; border-radius: 5px; cursor: pointer; font-size: 1.1em; font-weight: bold; width: 100%; }
+        h1 { color: #58A6FF; margin-top: 0; }
+        h2 { color: #E6EDF3; border-bottom: 1px solid #30363D; padding-bottom: 10px; margin-top: 0; }
+        .input-group { margin-bottom: 15px; }
+        .input-group label { display: block; font-size: 0.9em; color: #8B949E; margin-bottom: 5px; text-transform: capitalize; }
+        .input-group input { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #30363D; background: #0D1117; color: #C9D1D9; box-sizing: border-box; }
+        .live-results { margin-top: 30px; padding: 20px; background: #0D1117; border-radius: 8px; border: 1px solid #30363D; }
+        .score-display { font-size: 2em; font-weight: bold; color: #3FB950; margin-bottom: 15px; }
+        .alert { color: #F85149; font-size: 0.9em; margin-bottom: 5px; }
+        .rec { color: #3FB950; font-size: 0.9em; margin-bottom: 5px; }
+        .live-tag { background: #F85149; color: white; font-size: 0.7em; padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-left: 10px; animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <!-- LEFT SIDE: Clean Store / Video Interface -->
+    <div class="store-side">
+        <a href="/" style="color: #58A6FF; text-decoration: none; margin-bottom: 20px;">&larr; Back to Dashboard</a>
+        <div class="video-placeholder">
+            ▶ [ Asset Showcase Video Area ]
+        </div>
+        <h1>{{ entry.asset }}</h1>
+        <p style="color: #8B949E; line-height: 1.6;">
+            High-quality marketplace asset ready for integration. Adjust the parameters on the right to see how this asset scales within your specific game environment before purchasing.
+        </p>
+        <div class="buy-box">
+            <h2 style="border:none;">$24.99</h2>
+            <button class="btn-buy">Add to Cart</button>
+        </div>
+    </div>
+
+    <!-- RIGHT SIDE: Phoenix Live Interactive Sim -->
+    <div class="phoenix-side">
+        <h2>Phoenix Engine <span class="live-tag">LIVE SIMULATION</span></h2>
+        <p style="font-size: 0.85em; color: #8B949E;">Tweak blueprint parameters below to instantly recalculate performance and gameplay alerts.</p>
+        
+        <form id="sim-form">
+            {% for key, val in editable_params.items() %}
+            <div class="input-group">
+                <label>{{ key.replace('_', ' ') }}</label>
+                <input type="number" step="any" class="sim-input" data-key="{{ key }}" value="{{ val }}">
+            </div>
+            {% endfor %}
+        </form>
+
+        <div class="live-results" id="results-pane">
+            <div class="score-display" id="sim-score">Score: {{ entry.report.optimization_score }}%</div>
+            <div id="sim-stats" style="color: #58A6FF; font-weight: bold; margin-bottom: 15px;"></div>
+            <div id="sim-alerts">
+                {% for rec in entry.report.recommendations %}<div class="rec">✔ {{ rec }}</div>{% endfor %}
+                {% for alert in entry.report.alerts %}<div class="alert">⚠ {{ alert }}</div>{% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const inputs = document.querySelectorAll('.sim-input');
+        
+        inputs.forEach(input => {
+            input.addEventListener('input', () => {
+                const overrides = {};
+                inputs.forEach(inp => {
+                    overrides[inp.getAttribute('data-key')] = inp.value;
+                });
+                
+                fetch('/api/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: {{ asset_id }}, overrides: overrides })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // Update Score
+                    const scoreEl = document.getElementById('sim-score');
+                    scoreEl.innerText = `Score: ${data.optimization_score}%`;
+                    scoreEl.style.color = data.optimization_score >= 80 ? '#3FB950' : (data.optimization_score >= 50 ? '#D2A8FF' : '#F85149');
+                    
+                    // Update Computed Stats (like DPS)
+                    const statsEl = document.getElementById('sim-stats');
+                    statsEl.innerHTML = '';
+                    if(data.stats['Calculated Dps']) {
+                        statsEl.innerHTML = `🔥 Live DPS: ${data.stats['Calculated Dps']}`;
+                    }
+
+                    // Update Alerts & Recs
+                    const alertsEl = document.getElementById('sim-alerts');
+                    alertsEl.innerHTML = '';
+                    data.recommendations.forEach(r => alertsEl.innerHTML += `<div class="rec">✔ ${r}</div>`);
+                    data.alerts.forEach(a => alertsEl.innerHTML += `<div class="alert">⚠ ${a}</div>`);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
+"""
+
 @app.route('/')
 def dashboard():
     """Visual Analysis Panel for Void Hub"""
     return render_template_string(DASHBOARD_HTML, history=reversed(analysis_history))
+
+@app.route('/simulate/<int:asset_id>')
+def simulate_page(asset_id):
+    """Renders the separated Interactive Preview side-by-side view."""
+    if asset_id >= len(analysis_history):
+        return redirect('/')
+        
+    entry = analysis_history[asset_id]
+    
+    # Extract only editable numeric/boolean parameters dynamically
+    editable_params = {k: v for k, v in entry['raw_data'].items() 
+                       if isinstance(v, (int, float, bool)) and k not in ['is_vr_ready']}
+                       
+    return render_template_string(SIMULATOR_HTML, entry=entry, asset_id=asset_id, editable_params=editable_params)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
